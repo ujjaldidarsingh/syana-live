@@ -18,7 +18,10 @@ create type public.live_prompt_type as enum (
   'word_cloud',
   'multiple_choice',
   'rating',
-  'open_text'
+  'open_text',
+  'reflection_map',
+  'spectrum',
+  'ranking'
 );
 
 create table if not exists public.live_prompts (

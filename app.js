@@ -7,6 +7,9 @@ const PROMPT_TYPES = {
   multiple_choice: "Multiple choice",
   rating: "Rating",
   open_text: "Response wall",
+  reflection_map: "Reflection map",
+  spectrum: "Spectrum",
+  ranking: "Priority stack",
 };
 
 const SAMPLE_PROMPTS = [
@@ -43,6 +46,35 @@ const SAMPLE_PROMPTS = [
     title: "Which topic should we spend more time with tomorrow?",
     description: "",
     options: ["Hukam", "Sangat", "Seva", "Daily practice", "Family and community"],
+    settings: {},
+  },
+  {
+    type: "reflection_map",
+    title: "Where are you arriving right now?",
+    description: "",
+    options: [],
+    settings: {
+      xMinLabel: "Unclear",
+      xMaxLabel: "Clear",
+      yMinLabel: "Closed",
+      yMaxLabel: "Open",
+    },
+  },
+  {
+    type: "spectrum",
+    title: "What would support your learning today?",
+    description: "",
+    options: [],
+    settings: {
+      minLabel: "More structure",
+      maxLabel: "More spaciousness",
+    },
+  },
+  {
+    type: "ranking",
+    title: "What should our Sangat prioritize after retreat?",
+    description: "Tap choices in the order you would prioritize them.",
+    options: ["Daily simran", "Seva projects", "Youth mentorship", "Gurbani study", "Family conversations"],
     settings: {},
   },
 ];
@@ -133,6 +165,26 @@ function qrCodeUrl(value, size = 360) {
     data: value,
   });
   return `https://api.qrserver.com/v1/create-qr-code/?${params.toString()}`;
+}
+
+function optionTypes(type) {
+  return type === "multiple_choice" || type === "ranking";
+}
+
+function axisSettings(settings = {}) {
+  return {
+    xMinLabel: settings.xMinLabel || "Less clear",
+    xMaxLabel: settings.xMaxLabel || "More clear",
+    yMinLabel: settings.yMinLabel || "Less open",
+    yMaxLabel: settings.yMaxLabel || "More open",
+  };
+}
+
+function spectrumSettings(settings = {}) {
+  return {
+    minLabel: settings.minLabel || "This",
+    maxLabel: settings.maxLabel || "That",
+  };
 }
 
 function uniqueRespondentCount(responses = state.responses) {
@@ -642,7 +694,7 @@ function renderParticipant() {
     <main class="content-wrap participant-view">
       <section class="prompt-stage">
         <article class="prompt-card">
-          <span class="eyebrow">${escapeHtml(PROMPT_TYPES[state.prompt.type])}</span>
+          <span class="eyebrow">${escapeHtml(PROMPT_TYPES[state.prompt.type] || state.prompt.type)}</span>
           <h1>${escapeHtml(state.prompt.title)}</h1>
           ${state.prompt.description ? `<p>${escapeHtml(state.prompt.description)}</p>` : ""}
           <form class="form-stack" data-action="respond">
@@ -680,6 +732,42 @@ function participantInputHtml() {
       </div>
     `;
   }
+  if (state.prompt.type === "reflection_map") {
+    const labels = axisSettings(state.prompt.settings);
+    return `
+      <div class="map-input" data-input="reflection-map">
+        <label class="field">
+          <span>${escapeHtml(labels.xMinLabel)} ↔ ${escapeHtml(labels.xMaxLabel)}</span>
+          <input name="mapX" type="range" min="0" max="100" value="50" />
+        </label>
+        <label class="field">
+          <span>${escapeHtml(labels.yMinLabel)} ↔ ${escapeHtml(labels.yMaxLabel)}</span>
+          <input name="mapY" type="range" min="0" max="100" value="50" />
+        </label>
+      </div>
+    `;
+  }
+  if (state.prompt.type === "spectrum") {
+    const labels = spectrumSettings(state.prompt.settings);
+    return `
+      <div class="spectrum-input" data-input="spectrum">
+        <div class="spectrum-labels"><span>${escapeHtml(labels.minLabel)}</span><span>${escapeHtml(labels.maxLabel)}</span></div>
+        <input name="spectrumValue" type="range" min="0" max="100" value="50" />
+      </div>
+    `;
+  }
+  if (state.prompt.type === "ranking") {
+    return `
+      <div class="ranking-input" data-input="ranking">
+        ${state.options.map((option) => `
+          <button class="ranking-button" type="button" data-option-id="${escapeHtml(option.id)}">
+            <span class="rank-number"></span>
+            <span>${escapeHtml(option.label)}</span>
+          </button>
+        `).join("")}
+      </div>
+    `;
+  }
   const label = state.prompt.type === "word_cloud" ? "Your word or short phrase" : "Your response";
   const maxLength = state.prompt.type === "word_cloud" ? 80 : 360;
   return `
@@ -703,6 +791,21 @@ function attachParticipantEvents() {
       app.querySelectorAll(".rating-button").forEach((item) => item.classList.toggle("selected", item === button));
     });
   });
+  app.querySelectorAll(".ranking-button").forEach((button) => {
+    button.addEventListener("click", () => {
+      const current = Array.isArray(state.participantValue) ? [...state.participantValue] : [];
+      const optionId = button.dataset.optionId;
+      const existing = current.indexOf(optionId);
+      if (existing >= 0) current.splice(existing, 1);
+      else current.push(optionId);
+      state.participantValue = current;
+      app.querySelectorAll(".ranking-button").forEach((item) => {
+        const rank = current.indexOf(item.dataset.optionId);
+        item.classList.toggle("selected", rank >= 0);
+        item.querySelector(".rank-number").textContent = rank >= 0 ? rank + 1 : "";
+      });
+    });
+  });
   app.querySelector("[data-action='respond']").addEventListener("submit", async (event) => {
     event.preventDefault();
     const form = new FormData(event.currentTarget);
@@ -721,6 +824,18 @@ function attachParticipantEvents() {
     } else if (state.prompt.type === "rating") {
       if (!state.participantValue) return setParticipantStatus("Choose a rating first.");
       payload.value_json = { rating: state.participantValue };
+    } else if (state.prompt.type === "reflection_map") {
+      payload.value_json = {
+        x: Number(form.get("mapX") || 50),
+        y: Number(form.get("mapY") || 50),
+      };
+    } else if (state.prompt.type === "spectrum") {
+      payload.value_json = { value: Number(form.get("spectrumValue") || 50) };
+    } else if (state.prompt.type === "ranking") {
+      if (!Array.isArray(state.participantValue) || state.participantValue.length < state.options.length) {
+        return setParticipantStatus("Rank every option before submitting.");
+      }
+      payload.value_json = { ranking: state.participantValue };
     } else {
       if (!text) return setParticipantStatus("Add a response first.");
       payload.value_text = text;
@@ -809,7 +924,7 @@ function renderDisplay() {
       <section class="display-frame">
         <div class="display-head">
           <img src="./assets/syana-logo.png" alt="SYANA" />
-          <span class="eyebrow">${escapeHtml(PROMPT_TYPES[state.prompt.type])} · ${uniqueRespondentCount()} participants · ${state.responses.length} responses</span>
+          <span class="eyebrow">${escapeHtml(PROMPT_TYPES[state.prompt.type] || state.prompt.type)} · ${uniqueRespondentCount()} participants · ${state.responses.length} responses</span>
         </div>
         <div>
           <h1 class="display-question">${escapeHtml(state.prompt.title)}</h1>
@@ -957,7 +1072,7 @@ function adminSessionHtml() {
         ${state.prompts.map((prompt) => `
           <button class="list-button ${prompt.id === state.prompt?.id ? "active" : ""}" data-prompt-id="${escapeHtml(prompt.id)}">
             <strong>${escapeHtml(prompt.title)}</strong>
-            <small>${escapeHtml(PROMPT_TYPES[prompt.type])} ${prompt.is_active ? "· live" : ""}</small>
+            <small>${escapeHtml(PROMPT_TYPES[prompt.type] || prompt.type)} ${prompt.is_active ? "· live" : ""}</small>
           </button>
         `).join("") || `<div class="empty-state">No prompts yet.</div>`}
       </div>
@@ -969,10 +1084,7 @@ function adminSessionHtml() {
         <label class="field">
           <span>Type</span>
           <select name="type">
-            <option value="word_cloud">Word cloud</option>
-            <option value="multiple_choice">Multiple choice</option>
-            <option value="rating">Rating</option>
-            <option value="open_text">Response wall</option>
+            ${promptTypeOptions("word_cloud")}
           </select>
         </label>
         <label class="field">
@@ -988,7 +1100,7 @@ function adminSessionHtml() {
           <textarea name="description"></textarea>
         </label>
         <label class="field full">
-          <span>Options for multiple choice, one per line</span>
+          <span>Options for choice or ranking, one per line</span>
           <textarea name="options">Keertan
 Vichaar
 Small group
@@ -1000,6 +1112,30 @@ Seva</textarea>
             <option value="true">Approve response wall text first</option>
             <option value="false">Show immediately</option>
           </select>
+        </label>
+        <label class="field">
+          <span>Spectrum left</span>
+          <input name="minLabel" value="More structure" />
+        </label>
+        <label class="field">
+          <span>Spectrum right</span>
+          <input name="maxLabel" value="More spaciousness" />
+        </label>
+        <label class="field">
+          <span>Map left</span>
+          <input name="xMinLabel" value="Unclear" />
+        </label>
+        <label class="field">
+          <span>Map right</span>
+          <input name="xMaxLabel" value="Clear" />
+        </label>
+        <label class="field">
+          <span>Map bottom</span>
+          <input name="yMinLabel" value="Closed" />
+        </label>
+        <label class="field">
+          <span>Map top</span>
+          <input name="yMaxLabel" value="Open" />
         </label>
         <div class="field">
           <span>&nbsp;</span>
@@ -1022,7 +1158,7 @@ Seva</textarea>
       ${state.prompt ? `
         <div class="toolbar">
           <span class="pill ${state.prompt.is_active ? "live" : ""}">${state.prompt.is_active ? "Live" : state.prompt.status}</span>
-          <span class="pill">${escapeHtml(PROMPT_TYPES[state.prompt.type])}</span>
+          <span class="pill">${escapeHtml(PROMPT_TYPES[state.prompt.type] || state.prompt.type)}</span>
           <span class="pill">${state.responses.length} responses</span>
         </div>
         ${selectedPromptEditorHtml()}
@@ -1055,7 +1191,7 @@ function promptOptionsText() {
 function promptFormValues(form) {
   const data = new FormData(form);
   const type = data.get("type");
-  const options = type === "multiple_choice"
+  const options = optionTypes(type)
     ? String(data.get("options") || "").split(/\r?\n/).map((item) => item.trim()).filter(Boolean)
     : [];
   return {
@@ -1066,13 +1202,19 @@ function promptFormValues(form) {
     settings: {
       scaleMax: Number(data.get("scaleMax") || 5),
       moderate: data.get("moderate") === "true",
+      minLabel: String(data.get("minLabel") || "").trim(),
+      maxLabel: String(data.get("maxLabel") || "").trim(),
+      xMinLabel: String(data.get("xMinLabel") || "").trim(),
+      xMaxLabel: String(data.get("xMaxLabel") || "").trim(),
+      yMinLabel: String(data.get("yMinLabel") || "").trim(),
+      yMaxLabel: String(data.get("yMaxLabel") || "").trim(),
     },
   };
 }
 
 function validatePromptInput(input) {
   if (!input.title) return "Add a question before saving the prompt.";
-  if (input.type === "multiple_choice" && input.options.length < 2) return "Multiple choice prompts need at least two options.";
+  if (optionTypes(input.type) && input.options.length < 2) return "This prompt type needs at least two options.";
   return "";
 }
 
@@ -1086,6 +1228,8 @@ function selectedPromptEditorHtml() {
   if (!state.prompt) return "";
   const moderate = state.prompt.settings?.moderate === true;
   const scaleMax = Number(state.prompt.settings?.scaleMax || 5);
+  const spectrum = spectrumSettings(state.prompt.settings);
+  const axis = axisSettings(state.prompt.settings);
   return `
     <form class="form-grid prompt-edit-form" data-action="update-prompt">
       <label class="field">
@@ -1105,8 +1249,32 @@ function selectedPromptEditorHtml() {
         <textarea name="description">${escapeHtml(state.prompt.description || "")}</textarea>
       </label>
       <label class="field full">
-        <span>Options for multiple choice, one per line</span>
+        <span>Options for choice or ranking, one per line</span>
         <textarea name="options">${escapeHtml(promptOptionsText())}</textarea>
+      </label>
+      <label class="field">
+        <span>Spectrum left</span>
+        <input name="minLabel" value="${escapeHtml(spectrum.minLabel)}" />
+      </label>
+      <label class="field">
+        <span>Spectrum right</span>
+        <input name="maxLabel" value="${escapeHtml(spectrum.maxLabel)}" />
+      </label>
+      <label class="field">
+        <span>Map left</span>
+        <input name="xMinLabel" value="${escapeHtml(axis.xMinLabel)}" />
+      </label>
+      <label class="field">
+        <span>Map right</span>
+        <input name="xMaxLabel" value="${escapeHtml(axis.xMaxLabel)}" />
+      </label>
+      <label class="field">
+        <span>Map bottom</span>
+        <input name="yMinLabel" value="${escapeHtml(axis.yMinLabel)}" />
+      </label>
+      <label class="field">
+        <span>Map top</span>
+        <input name="yMaxLabel" value="${escapeHtml(axis.yMaxLabel)}" />
       </label>
       <label class="field">
         <span>Moderation</span>
@@ -1236,6 +1404,9 @@ function resultsHtml(forDisplay) {
   if (state.prompt.type === "multiple_choice") return multipleChoiceResults();
   if (state.prompt.type === "rating") return ratingResults();
   if (state.prompt.type === "open_text") return responseWall(forDisplay);
+  if (state.prompt.type === "reflection_map") return reflectionMapResults();
+  if (state.prompt.type === "spectrum") return spectrumResults();
+  if (state.prompt.type === "ranking") return rankingResults();
   return wordCloudResults();
 }
 
@@ -1302,6 +1473,83 @@ function wordCloudResults() {
 function responseWall(forDisplay) {
   const visible = state.responses.filter((response) => !forDisplay || response.is_approved).slice(-12);
   return `<div class="response-wall">${visible.map((response) => `<article class="response-card">${escapeHtml(response.value_text)}</article>`).join("") || `<div class="empty-state">Waiting for approved responses.</div>`}</div>`;
+}
+
+function reflectionMapResults() {
+  const labels = axisSettings(state.prompt.settings);
+  const points = state.responses
+    .map((response) => ({
+      x: Number(response.value_json?.x),
+      y: Number(response.value_json?.y),
+    }))
+    .filter((point) => Number.isFinite(point.x) && Number.isFinite(point.y));
+  if (!points.length) return `<div class="empty-state">Waiting for responses.</div>`;
+
+  const avg = points.reduce((total, point) => ({ x: total.x + point.x, y: total.y + point.y }), { x: 0, y: 0 });
+  avg.x /= points.length;
+  avg.y /= points.length;
+
+  return `
+    <div class="map-results">
+      <div class="map-label map-label-top">${escapeHtml(labels.yMaxLabel)}</div>
+      <div class="map-label map-label-bottom">${escapeHtml(labels.yMinLabel)}</div>
+      <div class="map-label map-label-left">${escapeHtml(labels.xMinLabel)}</div>
+      <div class="map-label map-label-right">${escapeHtml(labels.xMaxLabel)}</div>
+      <div class="map-plane">
+        ${points.map((point, index) => `<span class="map-dot" style="left:${point.x}%;bottom:${point.y}%;--i:${index % 7}"></span>`).join("")}
+        <span class="map-average" style="left:${avg.x}%;bottom:${avg.y}%">avg</span>
+      </div>
+    </div>
+  `;
+}
+
+function spectrumResults() {
+  const labels = spectrumSettings(state.prompt.settings);
+  const values = state.responses
+    .map((response) => Number(response.value_json?.value))
+    .filter((value) => Number.isFinite(value));
+  if (!values.length) return `<div class="empty-state">Waiting for responses.</div>`;
+  const avg = values.reduce((sum, value) => sum + value, 0) / values.length;
+
+  return `
+    <div class="spectrum-results">
+      <div class="spectrum-result-labels"><span>${escapeHtml(labels.minLabel)}</span><span>${escapeHtml(labels.maxLabel)}</span></div>
+      <div class="spectrum-track">
+        ${values.map((value, index) => `<span class="spectrum-dot" style="left:${value}%;--i:${index % 7}"></span>`).join("")}
+        <span class="spectrum-average" style="left:${avg}%">avg</span>
+      </div>
+      <div class="spectrum-average-readout">${Math.round(avg)}%</div>
+    </div>
+  `;
+}
+
+function rankingResults() {
+  if (!state.options.length) return `<div class="empty-state">Add options to show ranking results.</div>`;
+  const scores = new Map(state.options.map((option) => [option.id, { option, points: 0, votes: 0 }]));
+  const maxPoints = state.options.length;
+  state.responses.forEach((response) => {
+    const ranking = response.value_json?.ranking || [];
+    ranking.forEach((optionId, index) => {
+      const score = scores.get(optionId);
+      if (score) {
+        score.points += maxPoints - index;
+        score.votes += 1;
+      }
+    });
+  });
+  const rows = [...scores.values()].sort((a, b) => b.points - a.points);
+  const max = Math.max(...rows.map((row) => row.points), 1);
+  return `<div class="ranking-results">${rows.map((row, index) => {
+    const pct = Math.max(2, row.points / max * 100);
+    return `
+      <div class="ranking-row">
+        <div class="ranking-place">${index + 1}</div>
+        <div class="bar-label">${escapeHtml(row.option.label)}</div>
+        <div class="bar-track"><div class="bar-fill" style="width: ${pct}%"></div></div>
+        <div class="bar-value">${row.points}</div>
+      </div>
+    `;
+  }).join("")}</div>`;
 }
 
 function exportCsv() {
