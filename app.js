@@ -9,6 +9,44 @@ const PROMPT_TYPES = {
   open_text: "Response wall",
 };
 
+const SAMPLE_PROMPTS = [
+  {
+    type: "word_cloud",
+    title: "What word or short phrase describes the Sangat you hope we build?",
+    description: "",
+    options: [],
+    settings: {},
+  },
+  {
+    type: "multiple_choice",
+    title: "Which retreat format helps you engage most deeply?",
+    description: "",
+    options: ["Keertan", "Gurbani Vichaar", "Small-group discussion", "Reflection or journaling", "Seva"],
+    settings: {},
+  },
+  {
+    type: "rating",
+    title: "How grounded do you feel after this session?",
+    description: "",
+    options: [],
+    settings: { scaleMax: 5 },
+  },
+  {
+    type: "open_text",
+    title: "What is one question or tension you want us to carry into Vichaar?",
+    description: "Responses can be approved before they appear on the display.",
+    options: [],
+    settings: { moderate: true, scaleMax: 5 },
+  },
+  {
+    type: "multiple_choice",
+    title: "Which topic should we spend more time with tomorrow?",
+    description: "",
+    options: ["Hukam", "Sangat", "Seva", "Daily practice", "Family and community"],
+    settings: {},
+  },
+];
+
 const STOP_WORDS = new Set([
   "a", "an", "and", "are", "as", "at", "be", "but", "for", "from", "i", "in", "is", "it", "of", "on", "or", "our", "that", "the", "this", "to", "we", "with", "you", "your",
 ]);
@@ -90,6 +128,21 @@ function displayParticipantUrl(code) {
 
 function uniqueRespondentCount(responses = state.responses) {
   return new Set(responses.map((response) => response.respondent_id)).size;
+}
+
+function isAnonymousUser(user) {
+  return Boolean(user && (user.is_anonymous || user.app_metadata?.provider === "anonymous" || !user.email));
+}
+
+function adminErrorMessage(error) {
+  const message = error?.message || String(error);
+  if (/row-level security|permission denied|not authorized/i.test(message)) {
+    return "This facilitator account is not in live_admins yet. Add the Supabase user ID to public.live_admins, then try again.";
+  }
+  if (/duplicate key|unique/i.test(message)) {
+    return "That session code already exists. Try a different code, or select the existing session.";
+  }
+  return message;
 }
 
 async function copyText(value, label = "Copied") {
@@ -200,6 +253,27 @@ class DemoStore {
     return prompt;
   }
 
+  async updatePrompt(promptId, input) {
+    const data = this.read();
+    data.prompts = data.prompts.map((prompt) => (
+      prompt.id === promptId
+        ? {
+            ...prompt,
+            type: input.type,
+            title: input.title,
+            description: input.description || "",
+            settings: input.settings || {},
+          }
+        : prompt
+    ));
+    data.options = data.options.filter((option) => option.prompt_id !== promptId);
+    input.options.forEach((label, index) => {
+      data.options.push({ id: uid(), prompt_id: promptId, label, sort_order: index + 1 });
+    });
+    this.write(data);
+    return data.prompts.find((prompt) => prompt.id === promptId);
+  }
+
   async setActivePrompt(sessionId, promptId) {
     const data = this.read();
     data.prompts = data.prompts.map((prompt) => (
@@ -268,6 +342,8 @@ class SupabaseStore {
   }
 
   async adminLogin(email, password) {
+    const current = await this.currentUser();
+    if (isAnonymousUser(current)) await this.client.auth.signOut();
     const { data, error } = await this.client.auth.signInWithPassword({ email, password });
     if (error) throw error;
     return data.user;
@@ -339,6 +415,26 @@ class SupabaseStore {
     return prompt;
   }
 
+  async updatePrompt(promptId, input) {
+    const { data: prompt, error } = await this.client.from("live_prompts").update({
+      type: input.type,
+      title: input.title,
+      description: input.description,
+      settings: input.settings,
+    }).eq("id", promptId).select("*").single();
+    if (error) throw error;
+
+    const { error: deleteError } = await this.client.from("live_prompt_options").delete().eq("prompt_id", promptId);
+    if (deleteError) throw deleteError;
+
+    if (input.options.length) {
+      const rows = input.options.map((label, index) => ({ prompt_id: prompt.id, label, sort_order: index + 1 }));
+      const { error: optionError } = await this.client.from("live_prompt_options").insert(rows);
+      if (optionError) throw optionError;
+    }
+    return prompt;
+  }
+
   async setActivePrompt(sessionId, promptId) {
     const { error } = await this.client.rpc("set_active_live_prompt", { target_session_id: sessionId, target_prompt_id: promptId });
     if (error) throw error;
@@ -372,26 +468,33 @@ class SupabaseStore {
 
 function seedDemo() {
   const sessionId = uid();
-  const promptA = uid();
-  const promptB = uid();
-  const promptC = uid();
-  const promptD = uid();
-  const optionsB = ["Keertan", "Vichaar", "Small group", "Seva", "Free time"].map((label, index) => ({
-    id: uid(), prompt_id: promptB, label, sort_order: index + 1,
+  const prompts = SAMPLE_PROMPTS.map((prompt, index) => ({
+    id: uid(),
+    session_id: sessionId,
+    type: prompt.type,
+    title: prompt.title,
+    description: prompt.description,
+    status: index === 0 ? "open" : "draft",
+    is_active: index === 0,
+    settings: prompt.settings,
+    created_at: new Date().toISOString(),
   }));
+  const options = SAMPLE_PROMPTS.flatMap((prompt, promptIndex) => (
+    prompt.options.map((label, optionIndex) => ({
+      id: uid(),
+      prompt_id: prompts[promptIndex].id,
+      label,
+      sort_order: optionIndex + 1,
+    }))
+  ));
   return {
     sessions: [{ id: sessionId, code: "DEMO", title: "SYANA Gurmat Retreat", is_archived: false, created_at: new Date().toISOString() }],
-    prompts: [
-      { id: promptA, session_id: sessionId, type: "word_cloud", title: "What word describes the Sangat you want to build this weekend?", description: "", status: "open", is_active: true, settings: {}, created_at: new Date().toISOString() },
-      { id: promptB, session_id: sessionId, type: "multiple_choice", title: "Which part of retreat helps you connect most quickly?", description: "", status: "draft", is_active: false, settings: {}, created_at: new Date().toISOString() },
-      { id: promptC, session_id: sessionId, type: "rating", title: "How ready do you feel for small-group Vichaar right now?", description: "", status: "draft", is_active: false, settings: { scaleMax: 5 }, created_at: new Date().toISOString() },
-      { id: promptD, session_id: sessionId, type: "open_text", title: "What is one question you want the facilitators to hold?", description: "Responses can be approved before they appear on the display.", status: "draft", is_active: false, settings: { moderate: true }, created_at: new Date().toISOString() },
-    ],
-    options: optionsB,
+    prompts,
+    options,
     responses: [
       "warmth", "belonging", "seva", "honesty", "charhdi kala", "belonging", "simran", "sangat", "home", "discipline", "sangat", "care",
     ].map((word) => ({
-      id: uid(), session_id: sessionId, prompt_id: promptA, respondent_id: uid(), value_text: word, value_json: {}, is_approved: true, created_at: new Date().toISOString(), updated_at: new Date().toISOString(),
+      id: uid(), session_id: sessionId, prompt_id: prompts[0].id, respondent_id: uid(), value_text: word, value_json: {}, is_approved: true, created_at: new Date().toISOString(), updated_at: new Date().toISOString(),
     })),
   };
 }
@@ -704,12 +807,21 @@ function renderDisplay() {
 
 async function loadAdmin() {
   state.user = await state.store.currentUser();
+  if (SUPABASE_CONFIGURED && isAnonymousUser(state.user)) {
+    await state.store.adminLogout();
+    state.user = null;
+  }
   if (SUPABASE_CONFIGURED && !state.user) {
     renderAdminLogin();
     return;
   }
-  await refreshAdmin();
-  renderAdmin();
+  try {
+    await refreshAdmin();
+    renderAdmin();
+  } catch (error) {
+    state.status = adminErrorMessage(error);
+    renderAdmin();
+  }
 }
 
 async function refreshAdmin() {
@@ -788,7 +900,7 @@ function renderAdmin() {
           </form>
         </aside>
         <section class="admin-main">
-          ${state.session ? adminSessionHtml() : `<section class="admin-section"><div class="empty-state">Create a session to begin.</div></section>`}
+          ${state.session ? adminSessionHtml() : `<section class="admin-section"><div class="status-line error">${escapeHtml(state.status)}</div><div class="empty-state">Create a session to begin.</div></section>`}
         </section>
       </section>
     </main>
@@ -888,8 +1000,8 @@ Seva</textarea>
           <h2>${state.prompt ? escapeHtml(state.prompt.title) : "No prompt selected"}</h2>
         </div>
         <div class="toolbar">
-          ${state.prompts.length ? `<button class="ghost-button" data-action="create-starter-pack" type="button">Add starter pack</button>` : ""}
-          ${state.prompt ? `<button class="button" data-action="open-prompt" type="button">${state.prompt.is_active ? "Live now" : "Open live"}</button>` : `<button class="button" data-action="create-starter-pack" type="button">Add starter pack</button>`}
+          ${state.prompts.length ? `<button class="ghost-button" data-action="create-starter-pack" type="button">Add sample prompts</button>` : ""}
+          ${state.prompt ? `<button class="button" data-action="open-prompt" type="button">${state.prompt.is_active ? "Live now" : "Open live"}</button>` : `<button class="button" data-action="create-starter-pack" type="button">Add sample prompts</button>`}
         </div>
       </div>
       ${state.prompt ? `
@@ -898,6 +1010,7 @@ Seva</textarea>
           <span class="pill">${escapeHtml(PROMPT_TYPES[state.prompt.type])}</span>
           <span class="pill">${state.responses.length} responses</span>
         </div>
+        ${selectedPromptEditorHtml()}
         <section class="display-results">${resultsHtml(false)}</section>
         ${moderationHtml()}
       ` : `<div class="empty-state">Select or create a prompt.</div>`}
@@ -920,6 +1033,92 @@ function moderationHtml() {
   `;
 }
 
+function promptOptionsText() {
+  return state.options.map((option) => option.label).join("\n");
+}
+
+function promptFormValues(form) {
+  const data = new FormData(form);
+  const type = data.get("type");
+  const options = type === "multiple_choice"
+    ? String(data.get("options") || "").split(/\r?\n/).map((item) => item.trim()).filter(Boolean)
+    : [];
+  return {
+    type,
+    title: String(data.get("title") || "").trim(),
+    description: String(data.get("description") || "").trim(),
+    options,
+    settings: {
+      scaleMax: Number(data.get("scaleMax") || 5),
+      moderate: data.get("moderate") === "true",
+    },
+  };
+}
+
+function validatePromptInput(input) {
+  if (!input.title) return "Add a question before saving the prompt.";
+  if (input.type === "multiple_choice" && input.options.length < 2) return "Multiple choice prompts need at least two options.";
+  return "";
+}
+
+function promptTypeOptions(selectedType) {
+  return Object.entries(PROMPT_TYPES).map(([value, label]) => (
+    `<option value="${escapeHtml(value)}" ${value === selectedType ? "selected" : ""}>${escapeHtml(label)}</option>`
+  )).join("");
+}
+
+function selectedPromptEditorHtml() {
+  if (!state.prompt) return "";
+  const moderate = state.prompt.settings?.moderate === true;
+  const scaleMax = Number(state.prompt.settings?.scaleMax || 5);
+  return `
+    <form class="form-grid prompt-edit-form" data-action="update-prompt">
+      <label class="field">
+        <span>Type</span>
+        <select name="type">${promptTypeOptions(state.prompt.type)}</select>
+      </label>
+      <label class="field">
+        <span>Rating max</span>
+        <input name="scaleMax" type="number" min="3" max="10" value="${escapeHtml(scaleMax)}" />
+      </label>
+      <label class="field full">
+        <span>Question</span>
+        <input name="title" value="${escapeHtml(state.prompt.title)}" />
+      </label>
+      <label class="field full">
+        <span>Description</span>
+        <textarea name="description">${escapeHtml(state.prompt.description || "")}</textarea>
+      </label>
+      <label class="field full">
+        <span>Options for multiple choice, one per line</span>
+        <textarea name="options">${escapeHtml(promptOptionsText())}</textarea>
+      </label>
+      <label class="field">
+        <span>Moderation</span>
+        <select name="moderate">
+          <option value="true" ${moderate ? "selected" : ""}>Approve response wall text first</option>
+          <option value="false" ${!moderate ? "selected" : ""}>Show immediately</option>
+        </select>
+      </label>
+      <div class="field">
+        <span>&nbsp;</span>
+        <button class="button" type="submit">Update prompt</button>
+      </div>
+    </form>
+  `;
+}
+
+async function runAdminAction(action, successMessage = "") {
+  try {
+    await action();
+    if (successMessage) state.status = successMessage;
+    await refreshAdmin();
+  } catch (error) {
+    state.status = adminErrorMessage(error);
+  }
+  renderAdmin();
+}
+
 function attachAdminEvents() {
   app.querySelectorAll("[data-session-id]").forEach((button) => {
     button.addEventListener("click", async () => {
@@ -938,61 +1137,55 @@ function attachAdminEvents() {
   });
   app.querySelector("[data-action='create-session']")?.addEventListener("submit", async (event) => {
     event.preventDefault();
-    const data = new FormData(event.currentTarget);
-    const session = await state.store.createSession({ code: data.get("code"), title: data.get("title") });
-    state.selectedSessionId = session.id;
-    await refreshAdmin();
-    renderAdmin();
+    await runAdminAction(async () => {
+      const data = new FormData(event.currentTarget);
+      const session = await state.store.createSession({ code: data.get("code"), title: data.get("title") });
+      state.selectedSessionId = session.id;
+      await addSamplePrompts(session.id);
+    }, "Session created with sample prompts.");
   });
   app.querySelector("[data-action='create-prompt']")?.addEventListener("submit", async (event) => {
     event.preventDefault();
-    const data = new FormData(event.currentTarget);
-    const type = data.get("type");
-    const title = String(data.get("title") || "").trim();
-    if (!title) {
-      state.status = "Add a question before saving the prompt.";
+    const input = promptFormValues(event.currentTarget);
+    const validation = validatePromptInput(input);
+    if (validation) {
+      state.status = validation;
       renderAdmin();
       return;
     }
-    const options = type === "multiple_choice"
-      ? String(data.get("options") || "").split(/\r?\n/).map((item) => item.trim()).filter(Boolean)
-      : [];
-    if (type === "multiple_choice" && options.length < 2) {
-      state.status = "Multiple choice prompts need at least two options.";
+    await runAdminAction(async () => {
+      await state.store.createPrompt({ ...input, session_id: state.session.id });
+    }, "Prompt added.");
+  });
+  app.querySelector("[data-action='update-prompt']")?.addEventListener("submit", async (event) => {
+    event.preventDefault();
+    const input = promptFormValues(event.currentTarget);
+    const validation = validatePromptInput(input);
+    if (validation) {
+      state.status = validation;
       renderAdmin();
       return;
     }
-    await state.store.createPrompt({
-      session_id: state.session.id,
-      type,
-      title,
-      description: String(data.get("description") || "").trim(),
-      options,
-      settings: {
-        scaleMax: Number(data.get("scaleMax") || 5),
-        moderate: data.get("moderate") === "true",
-      },
-    });
-    await refreshAdmin();
-    renderAdmin();
+    await runAdminAction(async () => {
+      await state.store.updatePrompt(state.prompt.id, input);
+    }, "Prompt updated.");
   });
   app.querySelectorAll("[data-action='create-starter-pack']").forEach((button) => {
     button.addEventListener("click", async () => {
-      await createStarterPack();
-      state.status = "Starter prompts added.";
-      await refreshAdmin();
-      renderAdmin();
+      await runAdminAction(async () => {
+        await createStarterPack();
+      }, "Sample prompts added.");
     });
   });
   app.querySelector("[data-action='open-prompt']")?.addEventListener("click", async () => {
-    await state.store.setActivePrompt(state.session.id, state.prompt.id);
-    await refreshAdmin();
-    renderAdmin();
+    await runAdminAction(async () => {
+      await state.store.setActivePrompt(state.session.id, state.prompt.id);
+    });
   });
   app.querySelector("[data-action='close-prompts']")?.addEventListener("click", async () => {
-    await state.store.closeSessionPrompts(state.session.id);
-    await refreshAdmin();
-    renderAdmin();
+    await runAdminAction(async () => {
+      await state.store.closeSessionPrompts(state.session.id);
+    }, "Prompt closed.");
   });
   app.querySelector("[data-action='copy-participant']")?.addEventListener("click", async () => {
     await copyText(participantUrl(state.session.code), "Participant link copied.");
@@ -1005,46 +1198,20 @@ function attachAdminEvents() {
   app.querySelector("[data-action='export-csv']")?.addEventListener("click", () => exportCsv());
   app.querySelectorAll("[data-response-id]").forEach((button) => {
     button.addEventListener("click", async () => {
-      await state.store.setResponseApproval(button.dataset.responseId, button.dataset.approve === "true");
-      await refreshAdmin();
-      renderAdmin();
+      await runAdminAction(async () => {
+        await state.store.setResponseApproval(button.dataset.responseId, button.dataset.approve === "true");
+      });
     });
   });
 }
 
 async function createStarterPack() {
-  const pack = [
-    {
-      type: "word_cloud",
-      title: "What word describes the Sangat you want to build this weekend?",
-      description: "",
-      options: [],
-      settings: {},
-    },
-    {
-      type: "multiple_choice",
-      title: "Which part of retreat helps you connect most quickly?",
-      description: "",
-      options: ["Keertan", "Vichaar", "Small group", "Seva", "Free time"],
-      settings: {},
-    },
-    {
-      type: "rating",
-      title: "How ready do you feel for small-group Vichaar right now?",
-      description: "",
-      options: [],
-      settings: { scaleMax: 5 },
-    },
-    {
-      type: "open_text",
-      title: "What is one question you want the facilitators to hold?",
-      description: "Responses can be approved before they appear on the display.",
-      options: [],
-      settings: { moderate: true, scaleMax: 5 },
-    },
-  ];
-  for (const prompt of pack) {
-    await state.store.createPrompt({ ...prompt, session_id: state.session.id });
+  await addSamplePrompts(state.session.id);
+}
+
+async function addSamplePrompts(sessionId) {
+  for (const prompt of SAMPLE_PROMPTS) {
+    await state.store.createPrompt({ ...prompt, session_id: sessionId });
   }
 }
 

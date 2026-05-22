@@ -43,7 +43,8 @@ The app uses hash routes so static hosting does not need rewrite rules:
 3. Run `supabase/schema.sql` in the SQL editor.
 4. Create a permanent facilitator user in Supabase Auth.
 5. Insert that user id into `public.live_admins`.
-6. Fill in `config.js`:
+6. Optional: run `supabase/sample-data.sql` to create a `RETREAT` session with five editable sample prompts.
+7. Fill in `config.js`:
 
 ```js
 window.SYANA_LIVE_CONFIG = {
