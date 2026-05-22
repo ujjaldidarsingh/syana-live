@@ -311,7 +311,7 @@ class DemoStore {
   async adminLogout() {}
 
   async listSessions() {
-    return this.read().sessions;
+    return this.read().sessions.filter((session) => !session.is_archived);
   }
 
   async createSession(input) {
@@ -329,7 +329,18 @@ class DemoStore {
   }
 
   async getSessionByCode(code) {
-    return this.read().sessions.find((session) => session.code === normalizeCode(code)) || null;
+    return this.read().sessions.find((session) => session.code === normalizeCode(code) && !session.is_archived) || null;
+  }
+
+  async archiveSession(sessionId) {
+    const data = this.read();
+    data.sessions = data.sessions.map((session) => (
+      session.id === sessionId ? { ...session, is_archived: true, archived_at: new Date().toISOString() } : session
+    ));
+    data.prompts = data.prompts.map((prompt) => (
+      prompt.session_id === sessionId ? { ...prompt, is_active: false, status: "closed" } : prompt
+    ));
+    this.write(data);
   }
 
   async listPrompts(sessionId) {
@@ -517,9 +528,15 @@ class SupabaseStore {
   }
 
   async getSessionByCode(code) {
-    const { data, error } = await this.client.from("live_sessions").select("*").eq("code", normalizeCode(code)).maybeSingle();
+    const { data, error } = await this.client.from("live_sessions").select("*").eq("code", normalizeCode(code)).eq("is_archived", false).maybeSingle();
     if (error) throw error;
     return data;
+  }
+
+  async archiveSession(sessionId) {
+    const { error } = await this.client.from("live_sessions").update({ is_archived: true }).eq("id", sessionId);
+    if (error) throw error;
+    await this.closeSessionPrompts(sessionId);
   }
 
   async listPrompts(sessionId) {
@@ -1422,6 +1439,7 @@ function adminSessionHtml() {
           <button class="ghost-button" data-action="copy-display" type="button">Copy display link</button>
           <button class="ghost-button" data-action="export-csv" type="button">Export CSV</button>
           <button class="danger-button" data-action="close-prompts" type="button">Close prompt</button>
+          <button class="danger-button" data-action="close-session" type="button">Close session</button>
         </div>
       </div>
       <div class="launch-card">
@@ -1761,6 +1779,18 @@ function attachAdminEvents() {
     await runAdminAction(async () => {
       await state.store.closeSessionPrompts(state.session.id);
     }, "Prompt closed.");
+  });
+  app.querySelector("[data-action='close-session']")?.addEventListener("click", async () => {
+    if (!state.session) return;
+    const shouldClose = window.confirm(`Close session ${state.session.code}? Participants will no longer be able to join it.`);
+    if (!shouldClose) return;
+    await runAdminAction(async () => {
+      const closedId = state.session.id;
+      await state.store.archiveSession(closedId);
+      state.selectedSessionId = null;
+      state.session = null;
+      state.prompt = null;
+    }, "Session closed.");
   });
   app.querySelector("[data-action='delete-prompt']")?.addEventListener("click", async () => {
     if (!state.prompt) return;

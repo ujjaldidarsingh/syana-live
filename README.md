@@ -78,3 +78,4 @@ Suggested commit scope:
 - Response-wall moderation hides unapproved responses from the projector.
 - CSV export downloads responses for the selected prompt.
 - Feedback form submits at `/#/feedback/RETREAT` and admin can export feedback at `/#/admin/feedback`.
+- Admin can close old sessions; closed sessions are archived, removed from active lists, and no longer joinable.
