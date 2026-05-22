@@ -44,8 +44,9 @@ The app uses hash routes so static hosting does not need rewrite rules:
 4. Create a permanent facilitator user in Supabase Auth.
 5. Insert that user id into `public.live_admins`.
 6. Optional: run `supabase/add-creative-prompt-types.sql` if this project was created before reflection map, spectrum, and ranking prompts were added.
-7. Optional: run `supabase/sample-data.sql` to create a `RETREAT` session with editable sample prompts.
-8. Fill in `config.js`:
+7. Optional: run `supabase/add-feedback.sql` to add the retreat feedback form table to an existing project.
+8. Optional: run `supabase/sample-data.sql` to create a `RETREAT` session with editable sample prompts.
+9. Fill in `config.js`:
 
 ```js
 window.SYANA_LIVE_CONFIG = {
@@ -76,3 +77,4 @@ Suggested commit scope:
 - Word cloud, multiple choice, rating, and response wall each render results.
 - Response-wall moderation hides unapproved responses from the projector.
 - CSV export downloads responses for the selected prompt.
+- Feedback form submits at `/#/feedback/RETREAT` and admin can export feedback at `/#/admin/feedback`.

@@ -295,6 +295,7 @@ button {
 .prompt-card,
 .side-panel,
 .admin-section,
+.feedback-panel,
 .response-card,
 .modal-panel {
   background: var(--white);
@@ -305,6 +306,10 @@ button {
 
 .prompt-card {
   padding: 42px;
+}
+
+.feedback-panel {
+  padding: 32px;
 }
 
 .prompt-card h1 {
@@ -941,6 +946,51 @@ button {
   gap: 10px;
 }
 
+.feedback-grid {
+  display: grid;
+  gap: 14px;
+}
+
+.feedback-card {
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--white);
+  padding: 18px;
+  display: grid;
+  gap: 12px;
+}
+
+.feedback-card-head,
+.feedback-ratings {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.feedback-card-head small {
+  color: var(--muted);
+}
+
+.feedback-ratings span {
+  display: inline-flex;
+  min-height: 28px;
+  align-items: center;
+  padding: 0 10px;
+  border-radius: 999px;
+  background: var(--navy-050);
+  color: var(--navy-700);
+  font-size: 12px;
+  font-weight: 900;
+}
+
+.feedback-card p {
+  margin: 0;
+  color: var(--ink);
+  line-height: 1.45;
+}
+
 .admin-response-card.approved {
   border-color: var(--basanti-500);
 }
@@ -1012,6 +1062,7 @@ button {
   .join-hero,
   .prompt-card,
   .side-panel,
+  .feedback-panel,
   .admin-main,
   .admin-sidebar {
     padding: 22px;

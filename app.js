@@ -95,6 +95,7 @@ const state = {
   responses: [],
   sessionResponses: [],
   promptActivity: new Map(),
+  feedback: [],
   participantValue: null,
   participantText: "",
   selectedSessionId: null,
@@ -132,7 +133,12 @@ function participantId() {
 function parseRoute() {
   const hash = location.hash.replace(/^#\/?/, "");
   const params = new URLSearchParams(location.search);
+  if (hash.startsWith("admin/feedback")) return { name: "adminFeedback" };
   if (hash.startsWith("admin")) return { name: "admin" };
+  if (hash.startsWith("feedback")) {
+    const [, code] = hash.split("/");
+    return { name: "feedback", code: normalizeCode(code || params.get("session") || CONFIG.defaultSessionCode) };
+  }
   if (hash.startsWith("display")) {
     const [, code] = hash.split("/");
     return { name: "display", code: normalizeCode(code || params.get("session") || CONFIG.defaultSessionCode) };
@@ -143,12 +149,19 @@ function parseRoute() {
 function setRoute(route) {
   state.route = route;
   if (route.name === "admin") location.hash = "#/admin";
+  if (route.name === "adminFeedback") location.hash = "#/admin/feedback";
+  if (route.name === "feedback") location.hash = `#/feedback/${route.code || ""}`;
   if (route.name === "display") location.hash = `#/display/${route.code || ""}`;
 }
 
 function displayUrl(code) {
   const base = CONFIG.appBaseUrl || location.href.split("#")[0].split("?")[0];
   return `${base.replace(/\/?$/, "/")}#/display/${encodeURIComponent(code)}`;
+}
+
+function feedbackUrl(code) {
+  const base = CONFIG.appBaseUrl || location.href.split("#")[0].split("?")[0];
+  return `${base.replace(/\/?$/, "/")}#/feedback/${encodeURIComponent(code)}`;
 }
 
 function participantUrl(code) {
@@ -431,6 +444,26 @@ class DemoStore {
     this.write(data);
   }
 
+  async submitFeedback(input) {
+    const data = this.read();
+    data.feedback = data.feedback || [];
+    const existing = data.feedback.findIndex((entry) => entry.session_id === input.session_id && entry.respondent_id === input.respondent_id);
+    const feedback = {
+      id: existing >= 0 ? data.feedback[existing].id : uid(),
+      ...input,
+      created_at: existing >= 0 ? data.feedback[existing].created_at : new Date().toISOString(),
+      updated_at: new Date().toISOString(),
+    };
+    if (existing >= 0) data.feedback[existing] = feedback;
+    else data.feedback.push(feedback);
+    this.write(data);
+    return feedback;
+  }
+
+  async listFeedback(sessionId) {
+    return (this.read().feedback || []).filter((entry) => entry.session_id === sessionId);
+  }
+
   subscribe(sessionId, callback) {
     const fn = () => callback();
     this.listeners.add(fn);
@@ -582,6 +615,18 @@ class SupabaseStore {
     if (error) throw error;
   }
 
+  async submitFeedback(input) {
+    const { data, error } = await this.client.from("live_feedback").upsert(input, { onConflict: "session_id,respondent_id" }).select("*").single();
+    if (error) throw error;
+    return data;
+  }
+
+  async listFeedback(sessionId) {
+    const { data, error } = await this.client.from("live_feedback").select("*").eq("session_id", sessionId).order("created_at", { ascending: false });
+    if (error) throw error;
+    return data || [];
+  }
+
   subscribe(sessionId, callback) {
     const channel = this.client
       .channel(`syana-live-${sessionId}`)
@@ -622,6 +667,7 @@ function seedDemo() {
     ].map((word) => ({
       id: uid(), session_id: sessionId, prompt_id: prompts[0].id, respondent_id: uid(), value_text: word, value_json: {}, is_approved: true, created_at: new Date().toISOString(), updated_at: new Date().toISOString(),
     })),
+    feedback: [],
   };
 }
 
@@ -644,11 +690,14 @@ async function loadRoute() {
   state.responses = [];
   state.sessionResponses = [];
   state.promptActivity = new Map();
+  state.feedback = [];
   state.participantValue = null;
   state.participantText = "";
 
   try {
     if (state.route.name === "admin") await loadAdmin();
+    else if (state.route.name === "adminFeedback") await loadAdminFeedback();
+    else if (state.route.name === "feedback") await loadFeedback(state.route.code);
     else if (state.route.name === "display") await loadDisplay(state.route.code);
     else await loadParticipant(state.route.code);
   } catch (error) {
@@ -742,8 +791,165 @@ function shell(content, actions = "") {
   `;
 }
 
+async function loadFeedback(code) {
+  state.user = await state.store.ensureParticipant();
+  if (!code) {
+    renderFeedbackJoin();
+    return;
+  }
+  state.session = await state.store.getSessionByCode(code);
+  if (!state.session) {
+    renderFeedbackJoin(`No live session found for ${escapeHtml(code)}.`);
+    return;
+  }
+  renderFeedbackForm();
+}
+
+function renderFeedbackJoin(error = "") {
+  app.innerHTML = `
+    <main class="join-view">
+      <section class="join-hero">
+        <img src="./assets/syana-logo.png" alt="SYANA" />
+        <div>
+          <p class="eyebrow">Retreat Feedback</p>
+          <h1>Share what stayed with you.</h1>
+          <p>Your feedback helps shape the next SYANA Gurmat Retreat.</p>
+        </div>
+      </section>
+      <section class="join-panel">
+        <h2 class="panel-title">Session code</h2>
+        <form class="form-stack" data-action="feedback-join">
+          <label class="field">
+            <span>Code</span>
+            <input class="code-input" name="code" autocomplete="off" inputmode="latin" value="${escapeHtml(state.route.code || "")}" />
+          </label>
+          <button class="button" type="submit">Open feedback</button>
+          <div class="status-line ${error ? "error" : ""}">${error}</div>
+        </form>
+      </section>
+    </main>
+  `;
+  app.querySelector("[data-action='feedback-join']").addEventListener("submit", (event) => {
+    event.preventDefault();
+    const code = normalizeCode(new FormData(event.currentTarget).get("code"));
+    location.hash = `#/feedback/${encodeURIComponent(code)}`;
+  });
+}
+
+function ratingSelectHtml(name, label) {
+  return `
+    <label class="field">
+      <span>${escapeHtml(label)}</span>
+      <select name="${escapeHtml(name)}">
+        <option value="">Choose</option>
+        <option value="5">5 - Strongly agree</option>
+        <option value="4">4 - Agree</option>
+        <option value="3">3 - Neutral</option>
+        <option value="2">2 - Disagree</option>
+        <option value="1">1 - Strongly disagree</option>
+      </select>
+    </label>
+  `;
+}
+
+function renderFeedbackForm() {
+  const actions = `<a class="ghost-button" href="${escapeHtml(participantUrl(state.session.code))}">Live prompts</a>`;
+  app.innerHTML = shell(`
+    <main class="content-wrap feedback-view">
+      <section class="feedback-panel">
+        <div class="section-head">
+          <div>
+            <span class="eyebrow">Session ${escapeHtml(state.session.code)}</span>
+            <h2>Retreat feedback</h2>
+          </div>
+        </div>
+        <form class="form-grid" data-action="submit-feedback">
+          <label class="field">
+            <span>Name, optional</span>
+            <input name="name" autocomplete="name" />
+          </label>
+          <label class="field">
+            <span>Contact, optional</span>
+            <input name="contact" autocomplete="email" />
+          </label>
+          ${ratingSelectHtml("overall_rating", "Overall retreat experience")}
+          ${ratingSelectHtml("sangat_rating", "I felt welcomed in Sangat")}
+          ${ratingSelectHtml("gurmat_rating", "The retreat helped deepen my Gurmat connection")}
+          ${ratingSelectHtml("workshop_rating", "Workshops were useful and engaging")}
+          <label class="field">
+            <span>Would you recommend retreat?</span>
+            <select name="recommend">
+              <option value="">Choose</option>
+              <option value="yes">Yes</option>
+              <option value="maybe">Maybe</option>
+              <option value="no">No</option>
+            </select>
+          </label>
+          <label class="field">
+            <span>Would you come again?</span>
+            <select name="returning">
+              <option value="">Choose</option>
+              <option value="yes">Yes</option>
+              <option value="maybe">Maybe</option>
+              <option value="no">No</option>
+            </select>
+          </label>
+          <label class="field full">
+            <span>What was most meaningful?</span>
+            <textarea name="favorite_text"></textarea>
+          </label>
+          <label class="field full">
+            <span>What should we improve?</span>
+            <textarea name="improve_text"></textarea>
+          </label>
+          <label class="field full">
+            <span>Any workshop, seva, logistics, or facilitator feedback?</span>
+            <textarea name="workshop_text"></textarea>
+          </label>
+          <label class="field full">
+            <span>Anything else you want the admin team to know?</span>
+            <textarea name="additional_text"></textarea>
+          </label>
+          <div class="field full">
+            <button class="button" type="submit">Submit feedback</button>
+            <div class="status-line">${escapeHtml(state.status)}</div>
+          </div>
+        </form>
+      </section>
+    </main>
+  `, actions);
+  app.querySelector("[data-action='submit-feedback']").addEventListener("submit", async (event) => {
+    event.preventDefault();
+    const data = new FormData(event.currentTarget);
+    const payload = {
+      session_id: state.session.id,
+      respondent_id: state.user.id,
+      name: String(data.get("name") || "").trim(),
+      contact: String(data.get("contact") || "").trim(),
+      overall_rating: Number(data.get("overall_rating") || 0) || null,
+      sangat_rating: Number(data.get("sangat_rating") || 0) || null,
+      gurmat_rating: Number(data.get("gurmat_rating") || 0) || null,
+      workshop_rating: Number(data.get("workshop_rating") || 0) || null,
+      recommend: String(data.get("recommend") || ""),
+      returning: String(data.get("returning") || ""),
+      favorite_text: String(data.get("favorite_text") || "").trim(),
+      improve_text: String(data.get("improve_text") || "").trim(),
+      workshop_text: String(data.get("workshop_text") || "").trim(),
+      additional_text: String(data.get("additional_text") || "").trim(),
+    };
+    try {
+      await state.store.submitFeedback(payload);
+      state.status = "Feedback submitted. Thank you.";
+      renderFeedbackForm();
+    } catch (error) {
+      state.status = error.message || String(error);
+      renderFeedbackForm();
+    }
+  });
+}
+
 function renderParticipant() {
-  const actions = `<a class="ghost-button" href="./">Switch session</a>`;
+  const actions = `<a class="ghost-button" href="${escapeHtml(feedbackUrl(state.session.code))}">Feedback</a><a class="ghost-button" href="./">Switch session</a>`;
   if (!state.prompt) {
     app.innerHTML = shell(`
       <main class="waiting">
@@ -1021,6 +1227,28 @@ async function loadAdmin() {
   }
 }
 
+async function loadAdminFeedback() {
+  state.user = await state.store.currentUser();
+  if (SUPABASE_CONFIGURED && isAnonymousUser(state.user)) {
+    await state.store.adminLogout();
+    state.user = null;
+  }
+  if (SUPABASE_CONFIGURED && !state.user) {
+    renderAdminLogin();
+    return;
+  }
+  try {
+    state.sessions = await state.store.listSessions();
+    state.selectedSessionId = state.selectedSessionId || state.sessions[0]?.id || null;
+    state.session = state.sessions.find((session) => session.id === state.selectedSessionId) || state.sessions[0] || null;
+    state.feedback = state.session ? await state.store.listFeedback(state.session.id) : [];
+    renderAdminFeedback();
+  } catch (error) {
+    state.status = adminErrorMessage(error);
+    renderAdminFeedback();
+  }
+}
+
 async function refreshAdmin() {
   const previousPromptId = state.prompt?.id;
   state.sessions = await state.store.listSessions();
@@ -1071,7 +1299,8 @@ function renderAdminLogin(error = "") {
     const data = new FormData(event.currentTarget);
     try {
       state.user = await state.store.adminLogin(data.get("email"), data.get("password"));
-      await loadAdmin();
+      if (state.route.name === "adminFeedback") await loadAdminFeedback();
+      else await loadAdmin();
     } catch (loginError) {
       renderAdminLogin(loginError.message || String(loginError));
     }
@@ -1106,8 +1335,78 @@ function renderAdmin() {
         </section>
       </section>
     </main>
-  `, `<a class="ghost-button" href="./">Participant</a>${state.session ? `<a class="ghost-button" href="${escapeHtml(displayUrl(state.session.code))}">Display</a>` : ""}`);
+  `, `<a class="ghost-button" href="#/admin/feedback">Feedback</a><a class="ghost-button" href="./">Participant</a>${state.session ? `<a class="ghost-button" href="${escapeHtml(displayUrl(state.session.code))}">Display</a>` : ""}`);
   attachAdminEvents();
+}
+
+function renderAdminFeedback() {
+  app.innerHTML = shell(`
+    <main class="admin-view">
+      <section class="admin-layout">
+        <aside class="admin-sidebar">
+          <div class="section-head">
+            <h2>Feedback</h2>
+            <span class="pill">${state.feedback.length}</span>
+          </div>
+          <div class="session-list">
+            ${state.sessions.map((session) => `
+              <button class="list-button ${session.id === state.session?.id ? "active" : ""}" data-feedback-session-id="${escapeHtml(session.id)}">
+                <strong>${escapeHtml(session.title)}</strong>
+                <small>${escapeHtml(session.code)}</small>
+              </button>
+            `).join("") || `<div class="empty-state">No sessions yet.</div>`}
+          </div>
+        </aside>
+        <section class="admin-main">
+          <section class="admin-section">
+            <div class="section-head">
+              <div>
+                <span class="eyebrow">${escapeHtml(state.session?.code || "No session")}</span>
+                <h2>Retreat feedback</h2>
+              </div>
+              <div class="toolbar">
+                <a class="ghost-button" href="#/admin">Prompts</a>
+                <button class="ghost-button" data-action="export-feedback" type="button">Export CSV</button>
+              </div>
+            </div>
+            <div class="status-line">${escapeHtml(state.status)}</div>
+            <div class="feedback-grid">
+              ${state.feedback.map((entry) => feedbackCardHtml(entry)).join("") || `<div class="empty-state">No feedback yet.</div>`}
+            </div>
+          </section>
+        </section>
+      </section>
+    </main>
+  `, `<a class="ghost-button" href="#/admin">Prompts</a>${state.session ? `<a class="ghost-button" href="${escapeHtml(feedbackUrl(state.session.code))}">Feedback form</a>` : ""}`);
+  app.querySelectorAll("[data-feedback-session-id]").forEach((button) => {
+    button.addEventListener("click", async () => {
+      state.selectedSessionId = button.dataset.feedbackSessionId;
+      await loadAdminFeedback();
+    });
+  });
+  app.querySelector("[data-action='export-feedback']")?.addEventListener("click", () => exportFeedbackCsv());
+}
+
+function feedbackCardHtml(entry) {
+  return `
+    <article class="feedback-card">
+      <div class="feedback-card-head">
+        <strong>${escapeHtml(entry.name || "Anonymous")}</strong>
+        <small>${escapeHtml(formatActivityTime(entry.updated_at || entry.created_at))}</small>
+      </div>
+      <div class="feedback-ratings">
+        <span>Overall ${escapeHtml(entry.overall_rating || "-")}</span>
+        <span>Sangat ${escapeHtml(entry.sangat_rating || "-")}</span>
+        <span>Gurmat ${escapeHtml(entry.gurmat_rating || "-")}</span>
+        <span>Workshops ${escapeHtml(entry.workshop_rating || "-")}</span>
+      </div>
+      ${entry.favorite_text ? `<p><b>Meaningful:</b> ${escapeHtml(entry.favorite_text)}</p>` : ""}
+      ${entry.improve_text ? `<p><b>Improve:</b> ${escapeHtml(entry.improve_text)}</p>` : ""}
+      ${entry.workshop_text ? `<p><b>Workshop/logistics:</b> ${escapeHtml(entry.workshop_text)}</p>` : ""}
+      ${entry.additional_text ? `<p><b>Other:</b> ${escapeHtml(entry.additional_text)}</p>` : ""}
+      ${entry.contact ? `<p><b>Contact:</b> ${escapeHtml(entry.contact)}</p>` : ""}
+    </article>
+  `;
 }
 
 function adminSessionHtml() {
@@ -1667,6 +1966,50 @@ function exportCsv() {
   const link = document.createElement("a");
   link.href = URL.createObjectURL(blob);
   link.download = `${state.session.code}-${state.prompt?.type || "responses"}.csv`;
+  link.click();
+  URL.revokeObjectURL(link.href);
+}
+
+function exportFeedbackCsv() {
+  const rows = [[
+    "session_code",
+    "name",
+    "contact",
+    "overall_rating",
+    "sangat_rating",
+    "gurmat_rating",
+    "workshop_rating",
+    "recommend",
+    "returning",
+    "meaningful",
+    "improve",
+    "workshop_logistics",
+    "additional",
+    "created_at",
+  ]];
+  state.feedback.forEach((entry) => {
+    rows.push([
+      state.session?.code || "",
+      entry.name || "",
+      entry.contact || "",
+      entry.overall_rating || "",
+      entry.sangat_rating || "",
+      entry.gurmat_rating || "",
+      entry.workshop_rating || "",
+      entry.recommend || "",
+      entry.returning || "",
+      entry.favorite_text || "",
+      entry.improve_text || "",
+      entry.workshop_text || "",
+      entry.additional_text || "",
+      entry.created_at || "",
+    ]);
+  });
+  const csv = rows.map((row) => row.map((cell) => `"${String(cell).replaceAll('"', '""')}"`).join(",")).join("\n");
+  const blob = new Blob([csv], { type: "text/csv" });
+  const link = document.createElement("a");
+  link.href = URL.createObjectURL(blob);
+  link.download = `${state.session?.code || "retreat"}-feedback.csv`;
   link.click();
   URL.revokeObjectURL(link.href);
 }
