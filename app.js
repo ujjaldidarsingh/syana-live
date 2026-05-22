@@ -93,6 +93,8 @@ const state = {
   prompts: [],
   options: [],
   responses: [],
+  sessionResponses: [],
+  promptActivity: new Map(),
   participantValue: null,
   participantText: "",
   selectedSessionId: null,
@@ -206,6 +208,46 @@ function adminErrorMessage(error) {
   return message;
 }
 
+function formatActivityTime(value) {
+  if (!value) return "No responses yet";
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return "No responses yet";
+  return new Intl.DateTimeFormat([], {
+    month: "short",
+    day: "numeric",
+    hour: "numeric",
+    minute: "2-digit",
+  }).format(date);
+}
+
+function activityLabel(activity = {}) {
+  return activity.lastAt ? `Last engaged ${formatActivityTime(activity.lastAt)}` : "No engagement yet";
+}
+
+function buildPromptActivity(prompts, responses) {
+  const activity = new Map(prompts.map((prompt) => [prompt.id, { count: 0, lastAt: "" }]));
+  responses.forEach((response) => {
+    const entry = activity.get(response.prompt_id);
+    if (!entry) return;
+    entry.count += 1;
+    const touchedAt = response.updated_at || response.created_at || "";
+    if (touchedAt && (!entry.lastAt || new Date(touchedAt) > new Date(entry.lastAt))) entry.lastAt = touchedAt;
+  });
+  return activity;
+}
+
+function groupedPrompts() {
+  return Object.entries(PROMPT_TYPES)
+    .map(([type, label]) => ({
+      type,
+      label,
+      prompts: state.prompts
+        .map((prompt, index) => ({ prompt, number: index + 1 }))
+        .filter((item) => item.prompt.type === type),
+    }))
+    .filter((group) => group.prompts.length);
+}
+
 async function copyText(value, label = "Copied") {
   await navigator.clipboard.writeText(value);
   state.status = label;
@@ -293,6 +335,10 @@ class DemoStore {
     return this.read().responses.filter((response) => response.prompt_id === promptId);
   }
 
+  async listSessionResponses(sessionId) {
+    return this.read().responses.filter((response) => response.session_id === sessionId);
+  }
+
   async createPrompt(input) {
     const data = this.read();
     const prompt = {
@@ -333,6 +379,14 @@ class DemoStore {
     });
     this.write(data);
     return data.prompts.find((prompt) => prompt.id === promptId);
+  }
+
+  async deletePrompt(promptId) {
+    const data = this.read();
+    data.prompts = data.prompts.filter((prompt) => prompt.id !== promptId);
+    data.options = data.options.filter((option) => option.prompt_id !== promptId);
+    data.responses = data.responses.filter((response) => response.prompt_id !== promptId);
+    this.write(data);
   }
 
   async setActivePrompt(sessionId, promptId) {
@@ -459,6 +513,12 @@ class SupabaseStore {
     return data || [];
   }
 
+  async listSessionResponses(sessionId) {
+    const { data, error } = await this.client.from("live_responses").select("*").eq("session_id", sessionId).order("created_at", { ascending: true });
+    if (error) throw error;
+    return data || [];
+  }
+
   async createPrompt(input) {
     const { data: prompt, error } = await this.client.from("live_prompts").insert({
       session_id: input.session_id,
@@ -494,6 +554,11 @@ class SupabaseStore {
       if (optionError) throw optionError;
     }
     return prompt;
+  }
+
+  async deletePrompt(promptId) {
+    const { error } = await this.client.from("live_prompts").delete().eq("id", promptId);
+    if (error) throw error;
   }
 
   async setActivePrompt(sessionId, promptId) {
@@ -577,6 +642,8 @@ async function loadRoute() {
   state.prompts = [];
   state.options = [];
   state.responses = [];
+  state.sessionResponses = [];
+  state.promptActivity = new Map();
   state.participantValue = null;
   state.participantText = "";
 
@@ -955,6 +1022,7 @@ async function loadAdmin() {
 }
 
 async function refreshAdmin() {
+  const previousPromptId = state.prompt?.id;
   state.sessions = await state.store.listSessions();
   state.selectedSessionId = state.selectedSessionId || state.sessions[0]?.id || null;
   state.session = state.sessions.find((session) => session.id === state.selectedSessionId) || state.sessions[0] || null;
@@ -963,13 +1031,17 @@ async function refreshAdmin() {
     state.prompt = null;
     state.options = [];
     state.responses = [];
+    state.sessionResponses = [];
+    state.promptActivity = new Map();
     return;
   }
   state.selectedSessionId = state.session.id;
   state.prompts = await state.store.listPrompts(state.session.id);
-  state.prompt = state.prompts.find((prompt) => prompt.is_active) || state.prompts[0] || null;
+  state.prompt = state.prompts.find((prompt) => prompt.id === previousPromptId) || state.prompts.find((prompt) => prompt.is_active) || state.prompts[0] || null;
   state.options = state.prompt ? await state.store.listOptions(state.prompt.id) : [];
-  state.responses = state.prompt ? await state.store.listResponses(state.prompt.id) : [];
+  state.sessionResponses = await state.store.listSessionResponses(state.session.id);
+  state.promptActivity = buildPromptActivity(state.prompts, state.sessionResponses);
+  state.responses = state.prompt ? state.sessionResponses.filter((response) => response.prompt_id === state.prompt.id) : [];
 }
 
 function renderAdminLogin(error = "") {
@@ -1068,14 +1140,7 @@ function adminSessionHtml() {
         </div>
       </div>
       <div class="status-line">${escapeHtml(state.status)}</div>
-      <div class="prompt-list">
-        ${state.prompts.map((prompt) => `
-          <button class="list-button ${prompt.id === state.prompt?.id ? "active" : ""}" data-prompt-id="${escapeHtml(prompt.id)}">
-            <strong>${escapeHtml(prompt.title)}</strong>
-            <small>${escapeHtml(PROMPT_TYPES[prompt.type] || prompt.type)} ${prompt.is_active ? "· live" : ""}</small>
-          </button>
-        `).join("") || `<div class="empty-state">No prompts yet.</div>`}
-      </div>
+      ${promptGroupsHtml()}
     </section>
 
     <section class="admin-section">
@@ -1153,6 +1218,7 @@ Seva</textarea>
         <div class="toolbar">
           ${state.prompts.length ? `<button class="ghost-button" data-action="create-starter-pack" type="button">Add sample prompts</button>` : ""}
           ${state.prompt ? `<button class="button" data-action="open-prompt" type="button">${state.prompt.is_active ? "Live now" : "Open live"}</button>` : `<button class="button" data-action="create-starter-pack" type="button">Add sample prompts</button>`}
+          ${state.prompt ? `<button class="danger-button" data-action="delete-prompt" type="button">Delete question</button>` : ""}
         </div>
       </div>
       ${state.prompt ? `
@@ -1160,6 +1226,7 @@ Seva</textarea>
           <span class="pill ${state.prompt.is_active ? "live" : ""}">${state.prompt.is_active ? "Live" : state.prompt.status}</span>
           <span class="pill">${escapeHtml(PROMPT_TYPES[state.prompt.type] || state.prompt.type)}</span>
           <span class="pill">${state.responses.length} responses</span>
+          <span class="pill">${escapeHtml(activityLabel(state.promptActivity.get(state.prompt.id)))}</span>
         </div>
         ${selectedPromptEditorHtml()}
         <section class="display-results">${resultsHtml(false)}</section>
@@ -1182,6 +1249,32 @@ function moderationHtml() {
       `).join("") || `<div class="empty-state">No responses yet.</div>`}
     </div>
   `;
+}
+
+function promptGroupsHtml() {
+  if (!state.prompts.length) return `<div class="empty-state">No prompts yet.</div>`;
+  return `<div class="prompt-groups">${groupedPrompts().map((group) => `
+    <section class="prompt-group">
+      <div class="prompt-group-title">
+        <span>${escapeHtml(group.label)}</span>
+        <span>${group.prompts.length}</span>
+      </div>
+      <div class="prompt-list">
+        ${group.prompts.map(({ prompt, number }) => {
+          const activity = state.promptActivity.get(prompt.id) || { count: 0, lastAt: "" };
+          return `
+            <button class="list-button prompt-list-button ${prompt.id === state.prompt?.id ? "active" : ""}" data-prompt-id="${escapeHtml(prompt.id)}">
+              <span class="prompt-number">${number}</span>
+              <span>
+                <strong>${escapeHtml(prompt.title)}</strong>
+                <small>${prompt.is_active ? "Live now" : escapeHtml(prompt.status)} · ${activity.count} response${activity.count === 1 ? "" : "s"} · ${escapeHtml(activityLabel(activity))}</small>
+              </span>
+            </button>
+          `;
+        }).join("")}
+      </div>
+    </section>
+  `).join("")}</div>`;
 }
 
 function promptOptionsText() {
@@ -1369,6 +1462,17 @@ function attachAdminEvents() {
     await runAdminAction(async () => {
       await state.store.closeSessionPrompts(state.session.id);
     }, "Prompt closed.");
+  });
+  app.querySelector("[data-action='delete-prompt']")?.addEventListener("click", async () => {
+    if (!state.prompt) return;
+    const shouldDelete = window.confirm(`Delete "${state.prompt.title}" and its responses?`);
+    if (!shouldDelete) return;
+    await runAdminAction(async () => {
+      const deletedId = state.prompt.id;
+      await state.store.deletePrompt(deletedId);
+      state.selectedSessionId = state.session.id;
+      state.prompt = null;
+    }, "Question deleted.");
   });
   app.querySelector("[data-action='copy-participant']")?.addEventListener("click", async () => {
     await copyText(participantUrl(state.session.code), "Participant link copied.");

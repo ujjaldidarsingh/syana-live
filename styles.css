@@ -501,6 +501,28 @@ button {
   gap: 10px;
 }
 
+.prompt-groups {
+  display: grid;
+  gap: 18px;
+}
+
+.prompt-group {
+  display: grid;
+  gap: 8px;
+}
+
+.prompt-group-title {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 900;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
 .list-button {
   border: 1px solid var(--line);
   background: var(--white);
@@ -512,10 +534,32 @@ button {
   gap: 4px;
 }
 
+.prompt-list-button {
+  grid-template-columns: 32px 1fr;
+  gap: 10px;
+  align-items: start;
+}
+
+.prompt-number {
+  display: inline-grid;
+  place-items: center;
+  width: 28px;
+  height: 28px;
+  border-radius: 50%;
+  background: var(--navy-050);
+  color: var(--navy-700);
+  font-weight: 900;
+}
+
 .list-button.active {
   background: var(--navy-700);
   color: var(--white);
   border-color: var(--navy-700);
+}
+
+.list-button.active .prompt-number {
+  background: var(--basanti-500);
+  color: var(--navy-900);
 }
 
 .list-button strong {
