@@ -1,3 +1,4 @@
 qa/
 *.zip
 .DS_Store
+.wrangler/
