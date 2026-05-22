@@ -126,6 +126,15 @@ function displayParticipantUrl(code) {
   return participantUrl(code).replace(/^https?:\/\//, "");
 }
 
+function qrCodeUrl(value, size = 360) {
+  const params = new URLSearchParams({
+    size: `${size}x${size}`,
+    margin: "18",
+    data: value,
+  });
+  return `https://api.qrserver.com/v1/create-qr-code/?${params.toString()}`;
+}
+
 function uniqueRespondentCount(responses = state.responses) {
   return new Set(responses.map((response) => response.respondent_id)).size;
 }
@@ -770,6 +779,7 @@ function renderDisplayJoin(error = "") {
 
 function renderDisplay() {
   if (!state.prompt) {
+    const joinUrl = participantUrl(state.session.code);
     app.innerHTML = `
       <main class="display-view">
         <section class="display-frame">
@@ -777,8 +787,13 @@ function renderDisplay() {
           <div class="display-results">
             <div class="launch-board">
               <p class="eyebrow">Join the room</p>
-              <h1>${escapeHtml(displayParticipantUrl(state.session.code))}</h1>
-              <div class="session-code">${escapeHtml(state.session.code)}</div>
+              <div class="join-grid">
+                <div>
+                  <h1>${escapeHtml(displayParticipantUrl(state.session.code))}</h1>
+                  <div class="session-code">${escapeHtml(state.session.code)}</div>
+                </div>
+                <img class="qr-code" src="${escapeHtml(qrCodeUrl(joinUrl))}" alt="QR code for ${escapeHtml(displayParticipantUrl(state.session.code))}" />
+              </div>
               <p>Keep this page open. The next question will appear automatically.</p>
             </div>
           </div>

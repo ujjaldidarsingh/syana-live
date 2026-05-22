@@ -566,6 +566,22 @@ button {
   max-width: 1040px;
 }
 
+.join-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(220px, 340px);
+  gap: 42px;
+  align-items: center;
+}
+
+.qr-code {
+  width: 100%;
+  aspect-ratio: 1;
+  padding: 16px;
+  border-radius: 8px;
+  background: var(--white);
+  box-shadow: 0 24px 70px rgba(0, 0, 0, 0.25);
+}
+
 .launch-board h1 {
   margin: 18px 0 28px;
   font-family: var(--display);
@@ -713,6 +729,7 @@ button {
 
   .form-grid,
   .launch-card,
+  .join-grid,
   .admin-response-grid,
   .response-wall {
     grid-template-columns: 1fr;
