@@ -96,6 +96,7 @@ const state = {
   sessionResponses: [],
   promptActivity: new Map(),
   feedback: [],
+  showResponses: false,
   participantValue: null,
   participantText: "",
   selectedSessionId: null,
@@ -1332,6 +1333,7 @@ async function refreshAdmin() {
   state.selectedSessionId = state.session.id;
   state.prompts = await state.store.listPrompts(state.session.id);
   state.prompt = state.prompts.find((prompt) => prompt.id === previousPromptId) || state.prompts.find((prompt) => prompt.is_active) || state.prompts[0] || null;
+  if (!state.prompt || state.prompt.id !== previousPromptId) state.showResponses = false;
   state.options = state.prompt ? await state.store.listOptions(state.prompt.id) : [];
   state.sessionResponses = await state.store.listSessionResponses(state.session.id);
   state.promptActivity = buildPromptActivity(state.prompts, state.sessionResponses);
@@ -1593,10 +1595,12 @@ Seva</textarea>
           <span class="pill">${escapeHtml(PROMPT_TYPES[effectivePromptType(state.prompt)] || effectivePromptType(state.prompt))}</span>
           <span class="pill">${state.responses.length} responses</span>
           <span class="pill">${escapeHtml(activityLabel(state.promptActivity.get(state.prompt.id)))}</span>
+          ${state.responses.length ? `<button class="ghost-button" data-action="toggle-response-view" type="button">${state.showResponses ? "Hide responses" : "View responses"}</button>` : ""}
         </div>
         ${selectedPromptEditorHtml()}
         <section class="display-results">${resultsHtml(false)}</section>
         ${moderationHtml()}
+        ${state.showResponses ? responseArchiveHtml() : ""}
       ` : `<div class="empty-state">Select or create a prompt.</div>`}
     </section>
   `;
@@ -1617,6 +1621,53 @@ function moderationHtml() {
   `;
 }
 
+function responseArchiveHtml() {
+  if (!state.prompt) return "";
+  return `
+    <section class="admin-section response-archive">
+      <div class="section-head">
+        <div>
+          <span class="eyebrow">${escapeHtml(PROMPT_TYPES[effectivePromptType(state.prompt)] || effectivePromptType(state.prompt))}</span>
+          <h2>Participant responses</h2>
+        </div>
+      </div>
+      <div class="admin-response-grid">
+        ${state.responses.map((response, index) => `
+          <article class="admin-response-card ${response.is_approved ? "approved" : ""}">
+            <span class="eyebrow">Response ${index + 1} · ${escapeHtml(formatActivityTime(response.updated_at || response.created_at))}</span>
+            <div>${escapeHtml(responseDisplayValue(response))}</div>
+          </article>
+        `).join("") || `<div class="empty-state">No responses yet.</div>`}
+      </div>
+    </section>
+  `;
+}
+
+function responseDisplayValue(response) {
+  const type = effectivePromptType(state.prompt);
+  if (type === "multiple_choice") {
+    const option = state.options.find((item) => item.id === response.value_json?.option_id);
+    return option?.label || "Unknown option";
+  }
+  if (type === "rating") return `${response.value_json?.rating || "-"} / ${state.prompt.settings?.scaleMax || 5}`;
+  if (type === "reflection_map") {
+    const labels = axisSettings(state.prompt.settings);
+    return `${labels.xMinLabel}-${labels.xMaxLabel}: ${response.value_json?.x ?? "-"}, ${labels.yMinLabel}-${labels.yMaxLabel}: ${response.value_json?.y ?? "-"}`;
+  }
+  if (type === "spectrum") {
+    const labels = spectrumSettings(state.prompt.settings);
+    return `${labels.minLabel}-${labels.maxLabel}: ${response.value_json?.value ?? "-"}%`;
+  }
+  if (type === "ranking") {
+    const ranking = response.value_json?.ranking || [];
+    return ranking.map((optionId, index) => {
+      const option = state.options.find((item) => item.id === optionId);
+      return `${index + 1}. ${option?.label || "Unknown option"}`;
+    }).join(" / ");
+  }
+  return response.value_text || JSON.stringify(response.value_json || {});
+}
+
 function promptGroupsHtml() {
   if (!state.prompts.length) return `<div class="empty-state">No prompts yet.</div>`;
   return `<div class="prompt-groups">${groupedPrompts().map((group) => `
@@ -1629,13 +1680,16 @@ function promptGroupsHtml() {
         ${group.prompts.map(({ prompt, number }) => {
           const activity = state.promptActivity.get(prompt.id) || { count: 0, lastAt: "" };
           return `
-            <button class="list-button prompt-list-button ${prompt.id === state.prompt?.id ? "active" : ""}" data-prompt-id="${escapeHtml(prompt.id)}">
-              <span class="prompt-number">${number}</span>
-              <span>
-                <strong>${escapeHtml(prompt.title)}</strong>
-                <small>${prompt.is_active ? "Live now" : escapeHtml(prompt.status)} · ${activity.count} response${activity.count === 1 ? "" : "s"} · ${escapeHtml(activityLabel(activity))}</small>
-              </span>
-            </button>
+            <div class="prompt-list-item ${prompt.id === state.prompt?.id ? "active" : ""}">
+              <button class="list-button prompt-list-button" data-prompt-id="${escapeHtml(prompt.id)}" type="button">
+                <span class="prompt-number">${number}</span>
+                <span>
+                  <strong>${escapeHtml(prompt.title)}</strong>
+                  <small>${prompt.is_active ? "Live now" : escapeHtml(prompt.status)} · ${activity.count} response${activity.count === 1 ? "" : "s"} · ${escapeHtml(activityLabel(activity))}</small>
+                </span>
+              </button>
+              ${activity.count ? `<button class="prompt-action-button" data-view-responses="${escapeHtml(prompt.id)}" type="button" aria-label="View responses for ${escapeHtml(prompt.title)}">...</button>` : ""}
+            </div>
           `;
         }).join("")}
       </div>
@@ -1772,10 +1826,26 @@ function attachAdminEvents() {
   app.querySelectorAll("[data-prompt-id]").forEach((button) => {
     button.addEventListener("click", async () => {
       state.prompt = state.prompts.find((prompt) => prompt.id === button.dataset.promptId);
+      if (!state.prompt) return;
       state.options = await state.store.listOptions(state.prompt.id);
       state.responses = await state.store.listResponses(state.prompt.id);
+      state.showResponses = false;
       renderAdmin();
     });
+  });
+  app.querySelectorAll("[data-view-responses]").forEach((button) => {
+    button.addEventListener("click", async () => {
+      state.prompt = state.prompts.find((prompt) => prompt.id === button.dataset.viewResponses);
+      if (!state.prompt) return;
+      state.options = await state.store.listOptions(state.prompt.id);
+      state.responses = await state.store.listResponses(state.prompt.id);
+      state.showResponses = true;
+      renderAdmin();
+    });
+  });
+  app.querySelector("[data-action='toggle-response-view']")?.addEventListener("click", () => {
+    state.showResponses = !state.showResponses;
+    renderAdmin();
   });
   app.querySelector("[data-action='create-session']")?.addEventListener("submit", async (event) => {
     event.preventDefault();

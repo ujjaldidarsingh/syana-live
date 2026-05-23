@@ -539,10 +539,38 @@ button {
   gap: 4px;
 }
 
+.prompt-list-item {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 42px;
+  gap: 8px;
+  align-items: stretch;
+}
+
 .prompt-list-button {
   grid-template-columns: 32px 1fr;
   gap: 10px;
   align-items: start;
+}
+
+.prompt-list-item.active .list-button {
+  background: var(--navy-700);
+  color: var(--white);
+  border-color: var(--navy-700);
+}
+
+.prompt-action-button {
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: var(--paper);
+  color: var(--navy-700);
+  font-weight: 900;
+  min-height: 52px;
+}
+
+.prompt-action-button:hover,
+.prompt-action-button:focus {
+  background: var(--basanti-100);
+  border-color: var(--basanti-500);
 }
 
 .prompt-number {
@@ -562,7 +590,8 @@ button {
   border-color: var(--navy-700);
 }
 
-.list-button.active .prompt-number {
+.list-button.active .prompt-number,
+.prompt-list-item.active .prompt-number {
   background: var(--basanti-500);
   color: var(--navy-900);
 }
