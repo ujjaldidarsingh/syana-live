@@ -186,6 +186,25 @@ function optionTypes(type) {
   return type === "multiple_choice" || type === "ranking";
 }
 
+function effectivePromptType(prompt) {
+  if (!prompt) return "";
+  if (typeof prompt === "string") return prompt;
+  return prompt.settings?.visualType || prompt.type;
+}
+
+function storagePromptType(type) {
+  if (type === "reflection_map" || type === "spectrum") return "rating";
+  if (type === "ranking") return "multiple_choice";
+  return type;
+}
+
+function storagePromptSettings(input) {
+  const settings = { ...(input.settings || {}) };
+  if (storagePromptType(input.type) !== input.type) settings.visualType = input.type;
+  else delete settings.visualType;
+  return settings;
+}
+
 function axisSettings(settings = {}) {
   return {
     xMinLabel: settings.xMinLabel || "Less clear",
@@ -256,7 +275,7 @@ function groupedPrompts() {
       label,
       prompts: state.prompts
         .map((prompt, index) => ({ prompt, number: index + 1 }))
-        .filter((item) => item.prompt.type === type),
+        .filter((item) => effectivePromptType(item.prompt) === type),
     }))
     .filter((group) => group.prompts.length);
 }
@@ -368,12 +387,12 @@ class DemoStore {
     const prompt = {
       id: uid(),
       session_id: input.session_id,
-      type: input.type,
+      type: storagePromptType(input.type),
       title: input.title,
       description: input.description || "",
       status: "draft",
       is_active: false,
-      settings: input.settings || {},
+      settings: storagePromptSettings(input),
       created_at: new Date().toISOString(),
     };
     data.prompts.push(prompt);
@@ -390,10 +409,10 @@ class DemoStore {
       prompt.id === promptId
         ? {
             ...prompt,
-            type: input.type,
+            type: storagePromptType(input.type),
             title: input.title,
             description: input.description || "",
-            settings: input.settings || {},
+            settings: storagePromptSettings(input),
           }
         : prompt
     ));
@@ -572,10 +591,10 @@ class SupabaseStore {
   async createPrompt(input) {
     const { data: prompt, error } = await this.client.from("live_prompts").insert({
       session_id: input.session_id,
-      type: input.type,
+      type: storagePromptType(input.type),
       title: input.title,
       description: input.description,
-      settings: input.settings,
+      settings: storagePromptSettings(input),
     }).select("*").single();
     if (error) throw error;
     if (input.options.length) {
@@ -588,10 +607,10 @@ class SupabaseStore {
 
   async updatePrompt(promptId, input) {
     const { data: prompt, error } = await this.client.from("live_prompts").update({
-      type: input.type,
+      type: storagePromptType(input.type),
       title: input.title,
       description: input.description,
-      settings: input.settings,
+      settings: storagePromptSettings(input),
     }).eq("id", promptId).select("*").single();
     if (error) throw error;
 
@@ -987,12 +1006,13 @@ function renderParticipant() {
     return;
   }
 
+  const type = effectivePromptType(state.prompt);
   state.lastRenderedPromptId = state.prompt.id;
   app.innerHTML = shell(`
     <main class="content-wrap participant-view">
       <section class="prompt-stage">
         <article class="prompt-card">
-          <span class="eyebrow">${escapeHtml(PROMPT_TYPES[state.prompt.type] || state.prompt.type)}</span>
+          <span class="eyebrow">${escapeHtml(PROMPT_TYPES[type] || type)}</span>
           <h1>${escapeHtml(state.prompt.title)}</h1>
           ${state.prompt.description ? `<p>${escapeHtml(state.prompt.description)}</p>` : ""}
           <form class="form-stack" data-action="respond">
@@ -1022,14 +1042,15 @@ function updateParticipantLiveMeta() {
 }
 
 function participantInputHtml() {
-  if (state.prompt.type === "multiple_choice") {
+  const type = effectivePromptType(state.prompt);
+  if (type === "multiple_choice") {
     return `
       <div class="option-grid" data-input="choice">
         ${state.options.map((option) => `<button class="option-button" type="button" data-option-id="${escapeHtml(option.id)}">${escapeHtml(option.label)}</button>`).join("")}
       </div>
     `;
   }
-  if (state.prompt.type === "rating") {
+  if (type === "rating") {
     const max = Number(state.prompt.settings?.scaleMax || 5);
     return `
       <div class="rating-grid" data-input="rating">
@@ -1037,7 +1058,7 @@ function participantInputHtml() {
       </div>
     `;
   }
-  if (state.prompt.type === "reflection_map") {
+  if (type === "reflection_map") {
     const labels = axisSettings(state.prompt.settings);
     return `
       <div class="map-input" data-input="reflection-map">
@@ -1052,7 +1073,7 @@ function participantInputHtml() {
       </div>
     `;
   }
-  if (state.prompt.type === "spectrum") {
+  if (type === "spectrum") {
     const labels = spectrumSettings(state.prompt.settings);
     return `
       <div class="spectrum-input" data-input="spectrum">
@@ -1061,7 +1082,7 @@ function participantInputHtml() {
       </div>
     `;
   }
-  if (state.prompt.type === "ranking") {
+  if (type === "ranking") {
     return `
       <div class="ranking-input" data-input="ranking">
         ${state.options.map((option) => `
@@ -1073,8 +1094,8 @@ function participantInputHtml() {
       </div>
     `;
   }
-  const label = state.prompt.type === "word_cloud" ? "Your word or short phrase" : "Your response";
-  const maxLength = state.prompt.type === "word_cloud" ? 80 : 360;
+  const label = type === "word_cloud" ? "Your word or short phrase" : "Your response";
+  const maxLength = type === "word_cloud" ? 80 : 360;
   return `
     <label class="field">
       <span>${label}</span>
@@ -1115,28 +1136,29 @@ function attachParticipantEvents() {
     event.preventDefault();
     const form = new FormData(event.currentTarget);
     const text = String(form.get("response") || "").trim();
+    const type = effectivePromptType(state.prompt);
     const payload = {
       session_id: state.session.id,
       prompt_id: state.prompt.id,
       respondent_id: state.user.id,
       value_text: "",
       value_json: {},
-      is_approved: state.prompt.type !== "open_text" || !state.prompt.settings?.moderate,
+      is_approved: type !== "open_text" || !state.prompt.settings?.moderate,
     };
-    if (state.prompt.type === "multiple_choice") {
+    if (type === "multiple_choice") {
       if (!state.participantValue) return setParticipantStatus("Choose an answer first.");
       payload.value_json = { option_id: state.participantValue };
-    } else if (state.prompt.type === "rating") {
+    } else if (type === "rating") {
       if (!state.participantValue) return setParticipantStatus("Choose a rating first.");
       payload.value_json = { rating: state.participantValue };
-    } else if (state.prompt.type === "reflection_map") {
+    } else if (type === "reflection_map") {
       payload.value_json = {
         x: Number(form.get("mapX") || 50),
         y: Number(form.get("mapY") || 50),
       };
-    } else if (state.prompt.type === "spectrum") {
+    } else if (type === "spectrum") {
       payload.value_json = { value: Number(form.get("spectrumValue") || 50) };
-    } else if (state.prompt.type === "ranking") {
+    } else if (type === "ranking") {
       if (!Array.isArray(state.participantValue) || state.participantValue.length < state.options.length) {
         return setParticipantStatus("Rank every option before submitting.");
       }
@@ -1230,7 +1252,7 @@ function renderDisplay() {
       <section class="display-frame">
         <div class="display-head">
           <img src="./assets/syana-logo.png" alt="SYANA" />
-          <span class="eyebrow">${escapeHtml(PROMPT_TYPES[state.prompt.type] || state.prompt.type)} · ${uniqueRespondentCount()} participants · ${state.responses.length} responses</span>
+          <span class="eyebrow">${escapeHtml(PROMPT_TYPES[effectivePromptType(state.prompt)] || effectivePromptType(state.prompt))} · ${uniqueRespondentCount()} participants · ${state.responses.length} responses</span>
         </div>
         <div>
           <h1 class="display-question">${escapeHtml(state.prompt.title)}</h1>
@@ -1557,7 +1579,7 @@ Seva</textarea>
       ${state.prompt ? `
         <div class="toolbar">
           <span class="pill ${state.prompt.is_active ? "live" : ""}">${state.prompt.is_active ? "Live" : state.prompt.status}</span>
-          <span class="pill">${escapeHtml(PROMPT_TYPES[state.prompt.type] || state.prompt.type)}</span>
+          <span class="pill">${escapeHtml(PROMPT_TYPES[effectivePromptType(state.prompt)] || effectivePromptType(state.prompt))}</span>
           <span class="pill">${state.responses.length} responses</span>
           <span class="pill">${escapeHtml(activityLabel(state.promptActivity.get(state.prompt.id)))}</span>
         </div>
@@ -1570,7 +1592,7 @@ Seva</textarea>
 }
 
 function moderationHtml() {
-  if (!state.prompt || state.prompt.type !== "open_text") return "";
+  if (!state.prompt || effectivePromptType(state.prompt) !== "open_text") return "";
   return `
     <h2>Response moderation</h2>
     <div class="admin-response-grid">
@@ -1660,7 +1682,7 @@ function selectedPromptEditorHtml() {
     <form class="form-grid prompt-edit-form" data-action="update-prompt">
       <label class="field">
         <span>Type</span>
-        <select name="type">${promptTypeOptions(state.prompt.type)}</select>
+        <select name="type">${promptTypeOptions(effectivePromptType(state.prompt))}</select>
       </label>
       <label class="field">
         <span>Rating max</span>
@@ -1850,12 +1872,13 @@ async function addSamplePrompts(sessionId) {
 function resultsHtml(forDisplay) {
   if (!state.prompt) return "";
   if (!state.responses.length) return `<div class="empty-state">Waiting for responses.</div>`;
-  if (state.prompt.type === "multiple_choice") return multipleChoiceResults();
-  if (state.prompt.type === "rating") return ratingResults();
-  if (state.prompt.type === "open_text") return responseWall(forDisplay);
-  if (state.prompt.type === "reflection_map") return reflectionMapResults();
-  if (state.prompt.type === "spectrum") return spectrumResults();
-  if (state.prompt.type === "ranking") return rankingResults();
+  const type = effectivePromptType(state.prompt);
+  if (type === "multiple_choice") return multipleChoiceResults();
+  if (type === "rating") return ratingResults();
+  if (type === "open_text") return responseWall(forDisplay);
+  if (type === "reflection_map") return reflectionMapResults();
+  if (type === "spectrum") return spectrumResults();
+  if (type === "ranking") return rankingResults();
   return wordCloudResults();
 }
 
@@ -2005,7 +2028,7 @@ function exportCsv() {
   const rows = [["session_code", "prompt", "prompt_type", "response", "approved", "created_at"]];
   state.responses.forEach((response) => {
     const value = response.value_text || JSON.stringify(response.value_json || {});
-    rows.push([state.session.code, state.prompt.title, state.prompt.type, value, response.is_approved ? "yes" : "no", response.created_at || ""]);
+    rows.push([state.session.code, state.prompt.title, effectivePromptType(state.prompt), value, response.is_approved ? "yes" : "no", response.created_at || ""]);
   });
   const csv = rows.map((row) => row.map((cell) => `"${String(cell).replaceAll('"', '""')}"`).join(",")).join("\n");
   const blob = new Blob([csv], { type: "text/csv" });
