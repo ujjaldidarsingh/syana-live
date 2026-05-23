@@ -708,6 +708,7 @@ async function loadRoute() {
   state.sessionResponses = [];
   state.promptActivity = new Map();
   state.feedback = [];
+  state.lastRenderedPromptId = "";
   state.participantValue = null;
   state.participantText = "";
 
@@ -744,9 +745,14 @@ async function loadParticipant(code) {
 }
 
 async function refreshActiveAndRender() {
+  const previousPromptId = state.prompt?.id || "";
   await refreshActive();
   if (state.route.name === "display") renderDisplay();
-  else if (state.route.name === "participant") renderParticipant();
+  else if (state.route.name === "participant") {
+    const nextPromptId = state.prompt?.id || "";
+    if (previousPromptId !== nextPromptId || state.lastRenderedPromptId !== nextPromptId) renderParticipant();
+    else updateParticipantLiveMeta();
+  }
 }
 
 async function refreshActive() {
@@ -968,6 +974,7 @@ function renderFeedbackForm() {
 function renderParticipant() {
   const actions = `<a class="ghost-button" href="${escapeHtml(feedbackUrl(state.session.code))}">Feedback</a><a class="ghost-button" href="./">Switch session</a>`;
   if (!state.prompt) {
+    state.lastRenderedPromptId = "";
     app.innerHTML = shell(`
       <main class="waiting">
         <div>
@@ -980,6 +987,7 @@ function renderParticipant() {
     return;
   }
 
+  state.lastRenderedPromptId = state.prompt.id;
   app.innerHTML = shell(`
     <main class="content-wrap participant-view">
       <section class="prompt-stage">
@@ -996,7 +1004,7 @@ function renderParticipant() {
         <aside class="side-panel">
           <span class="eyebrow">Live room</span>
           <h2 class="brand-title">${escapeHtml(state.session.code)}</h2>
-          <p class="panel-copy">${state.responses.length} response${state.responses.length === 1 ? "" : "s"} received.</p>
+          <p class="panel-copy" data-live-response-count>${state.responses.length} response${state.responses.length === 1 ? "" : "s"} received.</p>
           <div class="submitted-box ${state.status ? "" : "hidden"}">Your latest answer is saved.</div>
         </aside>
       </section>
@@ -1004,6 +1012,13 @@ function renderParticipant() {
   `, actions);
 
   attachParticipantEvents();
+}
+
+function updateParticipantLiveMeta() {
+  const counter = app.querySelector("[data-live-response-count]");
+  if (counter) {
+    counter.textContent = `${state.responses.length} response${state.responses.length === 1 ? "" : "s"} received.`;
+  }
 }
 
 function participantInputHtml() {
@@ -1131,6 +1146,7 @@ function attachParticipantEvents() {
       payload.value_text = text;
     }
     try {
+      state.participantText = text;
       await state.store.submitResponse(payload);
       state.status = "Answer received.";
       await refreshActive();
