@@ -1614,11 +1614,15 @@ function moderationHtml() {
       ${state.responses.map((response) => `
         <article class="admin-response-card ${response.is_approved ? "approved" : ""}">
           <div>${escapeHtml(response.value_text)}</div>
-          <button class="ghost-button" data-response-id="${escapeHtml(response.id)}" data-approve="${response.is_approved ? "false" : "true"}" type="button">${response.is_approved ? "Hide" : "Approve"}</button>
+          ${approvalButtonHtml(response)}
         </article>
       `).join("") || `<div class="empty-state">No responses yet.</div>`}
     </div>
   `;
+}
+
+function approvalButtonHtml(response) {
+  return `<button class="ghost-button" data-response-id="${escapeHtml(response.id)}" data-approve="${response.is_approved ? "false" : "true"}" type="button">${response.is_approved ? "Hide" : "Approve"}</button>`;
 }
 
 function responseArchiveHtml() {
@@ -1636,6 +1640,7 @@ function responseArchiveHtml() {
           <article class="admin-response-card ${response.is_approved ? "approved" : ""}">
             <span class="eyebrow">Response ${index + 1} · ${escapeHtml(formatActivityTime(response.updated_at || response.created_at))}</span>
             <div>${escapeHtml(responseDisplayValue(response))}</div>
+            ${effectivePromptType(state.prompt) === "open_text" ? approvalButtonHtml(response) : ""}
           </article>
         `).join("") || `<div class="empty-state">No responses yet.</div>`}
       </div>
