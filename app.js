@@ -189,7 +189,18 @@ function optionTypes(type) {
 function effectivePromptType(prompt) {
   if (!prompt) return "";
   if (typeof prompt === "string") return prompt;
-  return prompt.settings?.visualType || prompt.type;
+  if (prompt.settings?.visualType) return prompt.settings.visualType;
+  if (prompt.settings?.promptType) return prompt.settings.promptType;
+  if (
+    prompt.type === "rating"
+    && prompt.settings?.xMinLabel
+    && prompt.settings?.xMaxLabel
+    && prompt.settings?.yMinLabel
+    && prompt.settings?.yMaxLabel
+  ) {
+    return "reflection_map";
+  }
+  return prompt.type;
 }
 
 function storagePromptType(type) {
@@ -200,8 +211,8 @@ function storagePromptType(type) {
 
 function storagePromptSettings(input) {
   const settings = { ...(input.settings || {}) };
-  if (storagePromptType(input.type) !== input.type) settings.visualType = input.type;
-  else delete settings.visualType;
+  settings.visualType = input.type;
+  settings.promptType = input.type;
   return settings;
 }
 
